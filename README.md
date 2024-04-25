@@ -8,4 +8,5 @@ This folder has the clustering code for creating heatmap
 - the clustering_dataset_GSE13837.R     - has the R script
 - Expression data, phenotypic data and annotation data are present in the zip files
 - pheatmap.png - contains the heatmap
+- the code_to_download folder - it has the code to download the files from the GEO and saved as csv, it ahs gene expression data, annotation data, phenotypic data(metadata)
 
