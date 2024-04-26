@@ -19,7 +19,8 @@
 #https://www.youtube.com/watch?v=ZQYLGS7ptWM
 #https://cales.arizona.edu/microarray/Jan07Workshop/lectures/Lecture%2010.pdf
 #https://docs.rc.fas.harvard.edu/wp-content/uploads/2012/11/Microarray_with_R_and_bioconductor.pdf
-
+#https://docs.rc.fas.harvard.edu/wp-content/uploads/2012/11/Microarray_with_R_and_bioconductor.pdf - THIS HAS THE MICRO ARRAY ANALYSIS
+#https://cri.uchicago.edu/wp-content/uploads/2015/02/Analysis-of-Microrrays-with-R-and-Bioconductor.2.pdf#:~:text=URL%3A%20https%3A%2F%2Fcri.uchicago.edu%2Fwp- THIS HAS THE DETAILS OF MICRO ARRAY ANALYSIS
 
 #STEP 1: INSTALLING THE PACKAGES 
 
