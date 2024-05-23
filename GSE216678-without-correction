@@ -1,0 +1,250 @@
+library(limma)
+library(pheatmap)
+library(MatrixGenerics)
+library(RColorBrewer)
+library(ggrepel)
+library(PCAtools)
+
+# Load the dataset
+load("~/Desktop/R-programming/GSE216678/GSE216678.RData")
+show(eset)
+
+# Examine metadata
+sample_data <- pData(eset)
+sample_data <- data.frame(Trait = sample_data$characteristics_ch1.4,
+                          Gender = sample_data$characteristics_ch1.1,
+                          Age = sample_data$characteristics_ch1.2)
+
+# Modify variable definitions
+sample_data$Trait[sample_data$Trait == "group: case"] <- "RA"
+sample_data$Trait[sample_data$Trait == "group: control"] <- "Control"
+sample_data$Gender <- gsub("gender: " , "", sample_data$Gender)
+sample_data$Age <- gsub("age: " , "", sample_data$Age)
+sample_data$Age <- as.numeric(sample_data$Age)
+sample_data$Trait
+# Convert age to categorical variable
+age_group <- cut(sample_data$Age, breaks = c(25, 58, 81), right = TRUE)
+sample_data$age_group <- age_group
+
+# Add modified variables to pheno data object
+pData(eset)$Trait <- sample_data$Trait
+pData(eset)$Gender <- sample_data$Gender
+pData(eset)$Age <- sample_data$Age
+pData(eset)$Age_group <- sample_data$age_group
+
+# Extract the expression data
+edata <- exprs(eset)
+
+# Check the dimensions of the data
+cat("Dimensions of edata:", dim(edata), "\n")
+
+# Ensure there are enough rows for normalization
+if (nrow(edata) < 2) {
+  stop("The data matrix has too few rows for reliable normalization.")
+}
+
+# Normalize the data
+edata <- normalizeVSN(edata)
+
+# Select top 500 genes with highest Mean Absolute Deviations (MAD)
+mads <- rowMads(edata)
+names(mads) <- rownames(edata)
+mads_sorted <- sort(mads, decreasing = TRUE)
+top500_genes <- names(mads_sorted)[1:500]
+
+# Extract the matrix with top 500 most variable values
+top500 <- edata[top500_genes, ]
+
+# Check for NA, Inf, -Inf values and handle them
+if(any(is.na(top500))) {
+  top500[is.na(top500)] <- 0
+}
+if(any(is.infinite(top500))) {
+  top500[is.infinite(top500)] <- 0
+}
+
+# Ensure correct row names for annotation
+rownames(sample_data) <- colnames(top500)
+
+# Print min and max values to verify they are finite
+min_val <- min(top500, na.rm = TRUE)
+max_val <- max(top500, na.rm = TRUE)
+cat("Min:", min_val, "Max:", max_val, "\n")
+
+# Cluster genes and samples, plot heatmap
+pdf("heatmap_before_correction.pdf", width = 7, height = 8)
+pheatmap(top500, 
+         color = colorRampPalette(rev(brewer.pal(n = 7, name = "RdYlBu")))(100),
+         scale = "row", 
+         clustering_distance_rows = "euclidean",
+         clustering_distance_cols = "euclidean",
+         clustering_method = "ward.D2",
+         annotation_col = sample_data[,-3], 
+         show_rownames = FALSE)
+dev.off()
+# -------------------------- PCA ---------------------------------------- #
+# Plot PCA without batch correction
+p <- pca(edata, metadata = sample_data[,-3], removeVar = 0.9)
+
+# Create biplot and draw stat ellipses at 95% CI around groups
+biplot(p,
+       colby = 'Trait', colkey = c('Control' = 'forestgreen', 'RA' = 'purple'),
+       # ellipse config
+       ellipse = TRUE,
+       ellipseType = 't',
+       ellipseLevel = 0.95,
+       ellipseFill = TRUE,
+       ellipseAlpha = 1/4,
+       ellipseLineSize = 1.0,
+       xlim = c(-125,125), ylim = c(-50, 80),
+       hline = 0, vline = c(-25, 0, 25),
+       legendPosition = 'top', legendLabSize = 16, legendIconSize = 8.0)
+ggsave("GSE15573_PCA_biplot_without_correct.pdf", device = "pdf", units = "in", 
+       width = 6, height = 6)
+
+# Create pairs plot
+pairsplot(p,
+          components = getComponents(p, c(1:6)),
+          triangle = TRUE, trianglelabSize = 12,
+          hline = 0, vline = 0,
+          pointSize = 0.4,
+          gridlines.major = FALSE, gridlines.minor = FALSE,
+          colby = 'Trait',
+          title = 'Pairs plot', plotaxes = FALSE,
+          margingaps = unit(c(-0.01, -0.01, -0.01, -0.01), 'cm'))
+ggsave("GSE15573_pairs_plot_without_correct.pdf", device = "pdf", units = "in", 
+       width = 6, height = 6)
+
+# Plot loadings, fancy
+plotloadings(p,
+             rangeRetain = 0.01,
+             labSize = 4.0,
+             title = 'Loadings plot',
+             subtitle = 'PC1, PC2, PC3, PC4, PC5',
+             caption = 'Top 1% variables',
+             shape = 24,
+             col = c('limegreen', 'black', 'red3'),
+             drawConnectors = TRUE)
+ggsave("GSE15573_loadings_plot_without_correct.pdf", device = "pdf", units = "in", 
+       width = 6, height = 7)
+# Convert categorical variables to numeric factors
+sample_data$Trait <- as.numeric(as.factor(sample_data$Trait))
+sample_data$Gender <- as.numeric(as.factor(sample_data$Gender))
+sample_data$age_group <- as.numeric(as.factor(sample_data$age_group))
+
+# Recreate the PCA object to include the updated metadata
+p <- pca(edata, metadata = sample_data[,-3], removeVar = 0.9)
+
+# Create eigencorrelation plot with numeric metadata
+pdf("GSE15573_eigencor_plot_without_correct.pdf", width = 7, height = 7) 
+eigencorplot(p,
+             metavars = c('Trait','Gender','age_group'))
+dev.off()
+
+# Create eigencorrelation plot
+pdf("GSE15573_eigencor_plot_without_correct.pdf", width = 7, height = 7) 
+eigencorplot(p,
+             metavars = c('Trait','Gender','age_group'))
+dev.off()
+
+# Identify optimal number of PCs
+horn <- parallelPCA(exprs(eset)) # Horn's method
+horn$n # 7
+
+elbow <- findElbowPoint(p$variance)
+elbow # 6
+
+# Create screeplot
+screeplot(p, components = getComponents(p, 1:10),
+          vline = c(horn$n, elbow)) + 
+  geom_label(aes(x = horn$n + 1, y = 50,
+                 label = 'Horn\'s', vjust = -1, size = 8)) +
+  geom_label(aes(x = elbow + 1, y = 50,
+                 label = 'Elbow method', vjust = -1, size = 8))
+ggsave("GSE15573_screeplot_without_correct.pdf", device = "pdf", units = "in", 
+       width = 7, height = 7)
+
+# -------------------- Detect DEGs without correction ----------------------- #
+# Create expression set object with VSN normalized data
+expr_vsn <- normalizeVSN(exprs(eset))
+eset_vsn <- ExpressionSet(assayData = expr_vsn, phenoData = phenoData(eset), 
+                          featureData = featureData(eset))
+pheno <- pData(eset_vsn)
+
+# Create model matrix with adjustment variables
+design <- model.matrix(~Gender + Age_group + Trait, data = pheno)
+head(design)
+
+# Fit the model
+fit <- lmFit(eset_vsn, design)
+fit <- eBayes(fit)
+res <- topTable(fit, coef = "TraitRA", number = dim(fit$genes)[1], 
+                adjust.method = "BH") 
+head(res)
+write.csv(res, file = "RA_vs_Controls_without_correct.csv")
+
+# How many genes are significant (adj.p.value < 0.05 and absolute 
+# fold change > 1.5)
+sum(res$adj.P.Val < 0.05) # 2720 probes
+# Save the results for significant probes
+write.csv(res[res$adj.P.Val < 0.05,], 
+          file = "RA_vs_Controls_sig_only_without_correct.csv")
+
+# Plot a heatmap of differentially expressed probes
+sig_probes <- res[which(res$adj.P.Val < 0.05),]$ID
+sig_exp <- expr_vsn[rownames(expr_vsn) %in% sig_probes,]
+
+annot <- data.frame(Trait = pData(eset_vsn)$Trait,
+                    Gender = pData(eset_vsn)$Gender,
+                    Age_group = pData(eset_vsn)$Age_group)
+rownames(annot) <- rownames(pData(eset_vsn))
+head(annot)
+
+# Clustering and heatmap for significant probes (adj. p-values < 0.05)
+pdf("heatmap_significant_without_correct.pdf", width = 7, height = 6)
+pheatmap(sig_exp, 
+         color = colorRampPalette(rev(brewer.pal(n = 7, name =
+                                                   "RdYlBu")))(100),
+         scale="row", 
+         clustering_distance_rows = "euclidean",
+         clustering_distance_cols = "euclidean",
+         clustering_method = "ward.D2",
+         annotation_col = annot, 
+         show_rownames = F)
+dev.off()
+
+# Create MA plot showing the relationship between average expression
+# and log fold change
+res <- res[with(res, order(logFC)),]
+res$threshold <- as.factor(res$adj.P.Val < 0.05)
+ggplot(data=res, aes(x=log2(AveExpr), y=logFC, colour=threshold)) + 
+  geom_point(alpha=0.4, size=1.8) + 
+  geom_hline(aes(yintercept = 0), colour = "blue", size = 1.2) +
+  ylim(c(min(res$logFC), max(res$logFC))) + 
+  xlab("Mean expression") + 
+  ylab("Log2 Fold Change") + 
+  theme(axis.title.x = element_text(face = "bold", size = 15),
+        axis.text.x = element_text(face = "bold", size = 12)) +
+  theme(axis.title.y = element_text(face = "bold", size = 15),
+        axis.text.y = element_text(face = "bold", size = 12)) +
+  scale_colour_discrete(name = "p.adjusted < 0.05") +
+  theme(legend.title = element_text(face = "bold", size = 15)) +
+  theme(legend.text = element_text(size = 14))
+ggsave("MAplot_without_correct.pdf", device = "pdf", width = 7, height = 5)
+
+# Create volcano plot
+res <- res[with(res, order(logFC)),]
+res$threshold <- as.factor(res$adj.P.Val < 0.05)
+ggplot(data=res, aes(x=logFC, y=-log10(adj.P.Val), colour=threshold)) + 
+  geom_point(alpha=0.4, size=1.75) + xlim(c(min(res$logFC), 
+                                            c(max(res$logFC)))) +
+  ylim(c(min(-log10(res$adj.P.Val)), max(-log10(res$adj.P.Val)))) + 
+  xlab("log2 fold change") + 
+  ylab("-log10 adjusted p-value") +
+  theme(axis.text=element_text(size=12, face="bold")) +
+  theme(axis.title=element_text(size=14)) +
+  theme(legend.title=element_text(size=14)) +
+  theme(legend.text=element_text(size=12))
+ggsave("volcano_plot_without_correct.pdf", device = "pdf", 
+       width = 5, height = 7)
+
