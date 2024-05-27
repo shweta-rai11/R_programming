@@ -1,0 +1,151 @@
+library(limma)
+library(pheatmap)
+library(MatrixGenerics)
+library(RColorBrewer)
+library(ggrepel)
+library(PCAtools)
+
+# Load the dataset
+load("~/Desktop/geo/GSE58795/GSE58795-without-corr/GSE58795.RData")
+show(eset)
+
+# Select clinico-pathological variables from sample metadata
+sample_data <- pData(eset)
+sample_data <- data.frame(Treatment = sample_data$characteristics_ch1.4,
+                          responder = sample_data$characteristics_ch1.5,
+                          week0 = sample_data$characteristics_ch1,
+                          week14 = sample_data$characteristics_ch1.1)
+unique(sample_data$week0)
+sample_data
+# Modify variable definitions
+sample_data$Treatment[sample_data$Treatment == "treatment: Placebo"] <- "Placebo"
+sample_data$Treatment[sample_data$Treatment == "treatment: Infliximab"] <- "Infliximab"
+
+sample_data$responder[sample_data$responder == "eular response: nonresponder"] <- "nonresponder"
+sample_data$responder[sample_data$responder == "eular response: responder"] <- "responder"
+sample_data$responder[sample_data$responder == "eular response: moderate"] <- "moderate"
+
+
+# Remove non-numeric characters from the entire week0 column
+sample_data$week0 <- gsub("das28 week [0-9]+: ", "", sample_data$week0)
+sample_data$week14 <- gsub("das28 week [0-14]+: ", "", sample_data$week14)
+# Convert the cleaned week0 column to numeric values
+sample_data$week0 <- as.numeric(sample_data$week0)
+sample_data$week14 <- as.numeric(sample_data$week14)
+sample_data
+
+
+#sample_data$week0_numeric <- as.numeric(gsub("das28 week 0: ", "", sample_data$week0))
+#sample_data$week14_numeric <- as.numeric(gsub("das28 week 14: ", "", sample_data$week14))
+
+#class(sample_data$Age) # age is still a character, we need to turn it into numbers
+#sample_data$Age <- as.numeric(sample_data$Age)
+#class(sample_data$Age)
+
+
+
+
+# Add modified variables to pData object
+pData(eset)$Treatment <- sample_data$Treatment
+pData(eset)$responder <- sample_data$responder
+#pData(eset)$week0 <- sample_data$week0
+#pData(eset)$week14 <- sample_data$week14
+head(pData(eset))
+
+# Create model matrix to compare RA samples to controls, 
+# while accounting for biological factors of no interest, i.e.
+# age and gender
+# The variables need to be converted to factors
+pData(eset)$Treatment <- factor(pData(eset)$Treatment, levels = c("Placebo", "Infliximab"))
+# Note, that we set Control as a reference level
+pData(eset)$Treatment
+
+# Convert other variables to factors
+pData(eset)$responder <- factor(pData(eset)$responder, level = c("nonresponder", "responder", "moderate"))
+pData(eset)$responder
+#pData(eset)$week0 <- factor(pData(eset)$week0)
+#pData(eset)$week14 <- factor(pData(eset)$week14)
+
+# Create design matrix
+Treatment <- pData(eset)$Treatment
+responder <- pData(eset)$responder
+#week0 <- pData(eset)$week0
+#week14 <- pData(eset)$week14
+design <- model.matrix(~Treatment + responder)
+head(design)
+
+# Fit the model
+fit <- lmFit(eset, design)
+fit <- eBayes(fit)
+res <- topTable(fit, coef = "responderresponder", number = dim(fit$genes)[1], 
+                adjust.method = "BH") 
+head(res)
+write.csv(res, file = "treatment_responder.csv")
+
+hist(res$P.Value, breaks=50, main="Distribution of p-values", xlab="P-value")
+
+# How many genes are significant (adj.p.value < 0.05 and absolute 
+# fold change > 1.5)
+sum(res$adj.P.Val < 0.05) # 406 probes
+# Save the results for significant probes
+write.csv(res[res$adj.P.Val < 0.05,], 
+          file = "treatment_responder_sig_only.csv")
+
+
+# Plot a heatmap of differentially expressed probes
+sig_probes <- res[which(res$adj.P.Val < 0.05),]$ID
+expr <- exprs(eset)
+sig_exp <- expr[rownames(expr) %in% sig_probes,]
+
+annot <- data.frame(Treatment = pData(eset)$Treatment,
+                    responder = pData(eset)$responder)
+rownames(annot) <- rownames(pData(eset))
+head(annot)
+
+# Clustering and heatmap for significant probes (adj. p-values < 0.05)
+pdf("treatment_responder_heatmap_significant.pdf", width = 7, height = 6)
+pheatmap(sig_exp, 
+         color = colorRampPalette(rev(brewer.pal(n = 7, name =
+                                                   "RdYlBu")))(100),
+         scale="row", 
+         clustering_distance_rows = "euclidean",
+         clustering_distance_cols = "euclidean",
+         clustering_method = "ward.D2",
+         annotation_col = annot, 
+         show_rownames = F)
+dev.off()
+
+# Create MA plot showing the relationship between average expression
+# and log fold change
+res <- res[with(res, order(logFC)),]
+res$threshold <- as.factor(res$adj.P.Val < 0.05)
+ggplot(data=res, aes(x=log2(AveExpr), y=logFC, colour=threshold)) + 
+  geom_point(alpha=0.4, size=1.8) + 
+  geom_hline(aes(yintercept = 0), colour = "blue", size = 1.2) +
+  ylim(c(min(res$logFC), max(res$logFC))) + 
+  xlab("Mean expression") + 
+  ylab("Log2 Fold Change") + 
+  theme(axis.title.x = element_text(face = "bold", size = 15),
+        axis.text.x = element_text(face = "bold", size = 12)) +
+  theme(axis.title.y = element_text(face = "bold", size = 15),
+        axis.text.y = element_text(face = "bold", size = 12)) +
+  scale_colour_discrete(name = "p.adjusted < 0.05") +
+  theme(legend.title = element_text(face = "bold", size = 15)) +
+  theme(legend.text = element_text(size = 14))
+ggsave("MAplot.pdf", device = "pdf", width = 7, height = 5)
+
+# Create volcano plot
+res <- res[with(res, order(logFC)),]
+#res$threshold <- as.factor(abs(res$logFC) > 0.59 & res$adj.P.Val < 0.05)
+res$threshold <- as.factor(res$adj.P.Val < 0.05)
+ggplot(data=res, aes(x=logFC, y=-log10(adj.P.Val), colour=threshold)) + 
+  geom_point(alpha=0.4, size=1.75) + xlim(c(min(res$logFC), 
+                                            c(max(res$logFC)))) +
+  ylim(c(min(-log10(res$adj.P.Val)), max(-log10(res$adj.P.Val)))) + 
+  xlab("log2 fold change") + 
+  ylab("-log10 adjusted p-value") +
+  theme(axis.text=element_text(size=12, face="bold")) +
+  theme(axis.title=element_text(size=14)) +
+  theme(legend.title=element_text(size=14)) +
+  theme(legend.text=element_text(size=12))
+ggsave("volcano_plot.pdf", device = "pdf", width = 5, height = 7) 
