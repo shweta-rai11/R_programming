@@ -1,0 +1,115 @@
+library(limma)
+library(pheatmap)
+library(ggplot2)
+library(RColorBrewer)
+library(GEOquery)
+
+# Load GSE15573 data set using GEOquery
+load("~/Desktop/geo/GSE15602/GSE15602-without-batch correction/GSE15602.RData")
+show(eset)
+
+# Apply variance stabilizing normalization
+exp_vsn <- normalizeVSN(exprs(eset))
+meanSdPlot(exp_vsn)
+eset <- ExpressionSet(assayData = exp_vsn, phenoData = phenoData(eset), featureData = featureData(eset))
+
+# Examine metadata
+sample_data <- pData(eset)
+
+sample_data <- data.frame(Trait = sample_data$characteristics_ch1.1,
+                          responder = sample_data$source_name_ch1)
+sample_data$responder
+# Modify the variable definitions
+# Modify the variable definitions
+sample_data$responder[sample_data$responder == "Synovial biopsy, RA patient, 12 weeks after adalimumab therapy, moderate responder"] <- "moderate_responder"
+sample_data$responder[sample_data$responder == "Synovial biopsy, RA patient, 12 weeks after adalimumab therapy, good responder"] <- "good_responder"
+sample_data$responder[sample_data$responder == "Synovial biopsy, RA patient, 12 weeks after adalimumab therapy, poor responder"] <- "poor_responder"
+sample_data$Trait[sample_data$Trait == "disease: rheumatoid arthritis"] <- "RA"
+
+
+# Add modified variables to pData object
+pData(eset)$responder <- sample_data$responder
+pData(eset)$Trait <- sample_data$Trait
+
+# Ensure the factors have correct levels
+pData(eset)$responder <- factor(pData(eset)$responder, levels = c("moderate_responder", "good_responder","poor_responder"))
+pData(eset)$Trait <- factor(pData(eset)$Trait, levels = c("RA"))
+
+# Check the levels
+levels(pData(eset)$responder)
+levels(pData(eset)$Trait)
+
+# Create design matrix using only the Trait variable
+design <- model.matrix(~responder, data = pData(eset))
+
+colnames(design)
+# Check the column names of the design matrix
+head(design)
+
+library(limma)
+
+# Fit the linear model
+fit <- lmFit(eset, design)
+
+# Create contrasts for each responder group vs. poor responder
+contrast.matrix <- makeContrasts(
+  good_vs_poor = respondergood_responder - responderpoor_responder,
+  levels = design
+)
+
+# Apply the contrast matrix
+fit2 <- contrasts.fit(fit, contrast.matrix)
+
+# Compute statistics using empirical Bayes
+fit2 <- eBayes(fit2)
+
+# Extract top differentially expressed genes for each contrast
+res_good_vs_poor <- topTable(fit2, coef = "good_vs_poor", number = Inf, adjust.method = "BH")
+
+# Write results to CSV files
+write.csv(res_good_vs_poor, file = "good_vs_poor.csv")
+
+# Create and save MA Plot for good vs poor responder
+threshold <- 0.05
+res_good_vs_poor$Significant <- ifelse(res_good_vs_poor$adj.P.Val < threshold, "Yes", "No")
+MA_good_vs_poor <- ggplot(res_good_vs_poor, aes(x = AveExpr, y = logFC, color = Significant)) +
+  geom_point(alpha = 0.5) +
+  scale_color_manual(values = c("No" = "black", "Yes" = "red")) +
+  theme_minimal() +
+  labs(title = "MA Plot: Good vs Poor Responder", x = "Average Expression", y = "Log Fold Change") +
+  theme(legend.position = "none")
+ggsave("MA_plot_good_vs_poor.pdf", plot = MA_good_vs_poor, device = "pdf", width = 7, height = 5)
+
+# Create and save Volcano Plot for good vs poor responder
+volcano_good_vs_poor <- ggplot(res_good_vs_poor, aes(x = logFC, y = -log10(adj.P.Val), color = Significant)) +
+  geom_point(alpha = 0.5) +
+  scale_color_manual(values = c("No" = "black", "Yes" = "red")) +
+  theme_minimal() +
+  labs(title = "Volcano Plot: Good vs Poor Responder", x = "Log Fold Change", y = "-log10 Adjusted P-Value") +
+  theme(legend.position = "none")
+ggsave("Volcano_plot_good_vs_poor.pdf", plot = volcano_good_vs_poor, device = "pdf", width = 7, height = 5)
+
+library(pheatmap)
+
+# Select the top 50 differentially expressed genes for the heatmap
+top_genes <- head(res_good_vs_poor, 500)
+top_gene_ids <- rownames(top_genes)
+
+# Extract the expression data for these top genes
+top_gene_exprs <- exprs(eset)[top_gene_ids, ]
+
+# Create a heatmap
+heatmap_colors <- colorRampPalette(brewer.pal(9, "RdBu"))(255)
+annotation <- data.frame(Responder = pData(eset)$responder)
+rownames(annotation) <- colnames(top_gene_exprs)
+
+pdf("Heatmap_Top500_Genes_Good_vs_Poor.pdf", width = 10, height = 8)
+pheatmap(top_gene_exprs,
+         cluster_rows = TRUE,
+         cluster_cols = TRUE,
+         scale = "row",
+         annotation_col = annotation,
+         color = heatmap_colors,
+         main = "Heatmap of Top 500 Differentially Expressed Genes: Good vs Poor Responder",
+         show_rownames = FALSE)
+dev.off()
