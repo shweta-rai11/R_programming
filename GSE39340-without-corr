@@ -1,0 +1,200 @@
+library(limma)
+library(pheatmap)
+library(MatrixGenerics)
+library(RColorBrewer)
+library(ggrepel)
+library(PCAtools)
+
+# Load the dataset
+load("~/Desktop/geo/GSE39340/GSE39340-without-corr/GSE39340.RData")
+show(eset)
+
+# Select clinico-pathological variables from sample metadata
+sample_data <- pData(eset)
+sample_data <- data.frame(Trait = sample_data$source_name_ch1,
+                          Gender = sample_data$characteristics_ch1,
+                          Age = sample_data$characteristics_ch1.1)
+unique(sample_data$Trait)
+
+# Modify variable definitions
+sample_data$Trait[sample_data$Trait == "ankylosing spondylitis"] <- "ankylosing_spondylitis"
+sample_data$Trait[sample_data$Trait == "osteoarthritis"] <- "OA"
+sample_data$Trait[sample_data$Trait == "rheumatoid arthritis"] <- "RA"
+
+sample_data$Gender <- gsub("gender: " , "", sample_data$Gender)
+print("Age values before cleaning:")
+print(unique(sample_data$Age))
+
+# Properly remove the prefix "age (years): "
+sample_data$Age <- gsub("age \\(years\\): ", "", sample_data$Age)
+print("Age values after removing 'age (years): ' prefix:")
+print(unique(sample_data$Age))
+
+# Remove any leading or trailing whitespace
+sample_data$Age <- trimws(sample_data$Age)
+print("Age values after trimming whitespace:")
+print(unique(sample_data$Age))
+
+# Check the type of Age column before conversion
+print("Type of Age column before conversion:")
+print(class(sample_data$Age))
+
+# Convert Age to numeric, handle non-numeric values
+sample_data$Age <- as.numeric(sample_data$Age)
+
+# Check the type of Age column after conversion
+print("Type of Age column after conversion:")
+print(class(sample_data$Age))
+
+# Debug step: Check for NA values introduced by coercion
+if (any(is.na(sample_data$Age))) {
+  print("Non-numeric Age values after cleaning:")
+  print(sample_data$Age[is.na(sample_data$Age)])
+}
+
+# Filter out rows where Age is NA after conversion
+sample_data <- sample_data[!is.na(sample_data$Age), ]
+
+# Check the number of rows remaining
+print("Number of rows after filtering:")
+print(nrow(sample_data))
+
+
+min_age <- min(sample_data$Age, na.rm = TRUE)
+min_age     
+
+# We can separate the patients into middle-aged and old categories
+age_group<-cut(sample_data$Age, 
+               breaks=c(13,24,45,81), right = T)
+age_group
+sample_data$age_group <- age_group
+
+# Add modified variables to pData object
+pData(eset)$Trait <- sample_data$Trait
+pData(eset)$Gender <- sample_data$Gender
+pData(eset)$Age <- sample_data$Age
+pData(eset)$Age_group <- sample_data$age_group
+head(pData(eset))
+
+# Create model matrix to compare RA samples to controls, 
+# while accounting for biological factors of no interest, i.e.
+# age and gender
+# The variables need to be converted to factors
+pData(eset)$Trait <- factor(pData(eset)$Trait, levels = c("ankylosing_spondylitis","OA","RA"))
+# Note, that we set Control as a reference level
+pData(eset)$Trait
+
+# Convert other variables to factors
+pData(eset)$Gender <- factor(pData(eset)$Gender)
+pData(eset)$Gender
+pData(eset)$Age_group <- factor(pData(eset)$Age_group)
+pData(eset)$Age_group
+
+# Create design matrix
+Trait <- pData(eset)$Trait
+Gender <- pData(eset)$Gender
+Age_group <- pData(eset)$Age_group
+design <- model.matrix(~Gender + Age_group + Trait)
+head(design)
+
+hist(res$P.Value, breaks=50, main="Distribution of p-values", xlab="P-value")
+
+
+# Fit the model
+fit <- lmFit(eset, design)
+fit <- eBayes(fit)
+res <- topTable(fit, coef = "TraitRA", number = dim(fit$genes)[1], 
+                adjust.method = "BH") 
+head(res)
+write.csv(res, file = "RA_vs_Controls.csv")
+
+# How many genes are significant (adj.p.value < 0.05 and absolute 
+# fold change > 1.5)
+sum(res$adj.P.Val < 0.5) # 406 probes
+# Save the results for significant probes
+write.csv(res[res$adj.P.Val < 0.5,], 
+          file = "RA_vs_Controls_sig_only.csv")
+
+
+# Plot a heatmap of differentially expressed probes
+sig_probes <- res[res$adj.P.Val < 0.5, ]$ID
+expr <- exprs(eset)
+sig_exp <- expr[rownames(expr) %in% sig_probes, ]
+
+# Inspect sig_exp to ensure it contains valid data
+print("Dimensions of sig_exp:")
+print(dim(sig_exp))
+
+print("Summary of sig_exp:")
+print(summary(sig_exp))
+
+# Check for NA values and non-finite values in sig_exp
+sig_exp[!is.finite(sig_exp)] <- NA
+
+# Remove rows with only NA values
+sig_exp <- sig_exp[rowSums(is.na(sig_exp)) != ncol(sig_exp), ]
+
+# Remove columns with only NA values
+sig_exp <- sig_exp[, colSums(is.na(sig_exp)) != nrow(sig_exp)]
+
+# Remove remaining NA values
+sig_exp <- na.omit(sig_exp)
+
+# Check cleaned sig_exp
+print("Cleaned sig_exp:")
+print(dim(sig_exp))
+print(summary(sig_exp))
+
+# Generate heatmap if sig_exp is valid
+annot <- data.frame(Trait = pData(eset)$Trait,
+                    Gender = pData(eset)$Gender,
+                    Age_group = pData(eset)$Age_group)
+rownames(annot) <- rownames(pData(eset))
+head(annot)
+
+# Clustering and heatmap for significant probes (adj. p-values < 0.05)
+pdf("heatmap_significant.pdf", width = 7, height = 6)
+pheatmap(sig_exp, 
+         color = colorRampPalette(rev(brewer.pal(n = 7, name = "RdYlBu")))(100),
+         scale = "row", 
+         clustering_distance_rows = "euclidean",
+         clustering_distance_cols = "euclidean",
+         clustering_method = "ward.D2",
+         annotation_col = annot, 
+         show_rownames = F)
+dev.off()
+
+# Create MA plot showing the relationship between average expression
+# and log fold change
+res <- res[with(res, order(logFC)),]
+res$threshold <- as.factor(res$adj.P.Val < 0.5)
+ggplot(data=res, aes(x=log2(AveExpr), y=logFC, colour=threshold)) + 
+  geom_point(alpha=0.4, size=1.8) + 
+  geom_hline(aes(yintercept = 0), colour = "blue", size = 1.2) +
+  ylim(c(min(res$logFC), max(res$logFC))) + 
+  xlab("Mean expression") + 
+  ylab("Log2 Fold Change") + 
+  theme(axis.title.x = element_text(face = "bold", size = 15),
+        axis.text.x = element_text(face = "bold", size = 12)) +
+  theme(axis.title.y = element_text(face = "bold", size = 15),
+        axis.text.y = element_text(face = "bold", size = 12)) +
+  scale_colour_discrete(name = "p.adjusted < 0.05") +
+  theme(legend.title = element_text(face = "bold", size = 15)) +
+  theme(legend.text = element_text(size = 14))
+ggsave("MAplot_1.pdf", device = "pdf", width = 7, height = 5)
+
+# Create volcano plot
+res <- res[with(res, order(logFC)),]
+#res$threshold <- as.factor(abs(res$logFC) > 0.59 & res$adj.P.Val < 0.05)
+res$threshold <- as.factor(res$adj.P.Val < 0.5)
+ggplot(data=res, aes(x=logFC, y=-log10(adj.P.Val), colour=threshold)) + 
+  geom_point(alpha=0.4, size=1.75) + xlim(c(min(res$logFC), 
+                                            c(max(res$logFC)))) +
+  ylim(c(min(-log10(res$adj.P.Val)), max(-log10(res$adj.P.Val)))) + 
+  xlab("log2 fold change") + 
+  ylab("-log10 adjusted p-value") +
+  theme(axis.text=element_text(size=12, face="bold")) +
+  theme(axis.title=element_text(size=14)) +
+  theme(legend.title=element_text(size=14)) +
+  theme(legend.text=element_text(size=12))
+ggsave("volcano_plot_1.pdf", device = "pdf", width = 5, height = 7) 
