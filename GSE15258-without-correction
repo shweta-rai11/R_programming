@@ -1,0 +1,115 @@
+library(limma)
+library(pheatmap)
+library(ggplot2)
+library(RColorBrewer)
+library(GEOquery)
+
+# Load GSE15573 data set using GEOquery
+load("~/Desktop/geo/GSE15258/GSE15258-without-correction/GSE15258.RData")
+show(eset)
+
+# Apply variance stabilizing normalization
+exp_vsn <- normalizeVSN(exprs(eset))
+meanSdPlot(exp_vsn)
+eset <- ExpressionSet(assayData = exp_vsn, phenoData = phenoData(eset), featureData = featureData(eset))
+
+# Examine metadata
+sample_data <- pData(eset)
+
+sample_data <- data.frame(Trait = sample_data$characteristics_ch1.1,
+                          responder = sample_data$characteristics_ch1.5)
+sample_data$responder
+unique(sample_data$responder)
+unique(sample_data$Trait)
+
+# Modify the variable definitions
+sample_data$responder[sample_data$responder == "response to anti-tnf therapy: RESPONSE"] <- "RESPONSE"
+sample_data$responder[sample_data$responder == "response to anti-tnf therapy: NORESPONSE"] <- "NORESPONSE"
+sample_data$responder[sample_data$responder == "response to anti-tnf therapy: NA"] <- "NA"
+sample_data$responder[sample_data$responder == "response to anti-tnf therapy: MEDIUM"] <- "MEDIUM"
+sample_data$Trait[sample_data$Trait == "disease state: rheumatoid arthritis"] <- "RA"
+
+# Add modified variables to pData object
+pData(eset)$responder <- sample_data$responder
+pData(eset)$Trait <- sample_data$Trait
+
+# Ensure the factors have correct levels
+pData(eset)$responder <- factor(pData(eset)$responder, levels = c("RESPONSE", "NORESPONSE", "NA", "MEDIUM"))
+pData(eset)$Trait <- factor(pData(eset)$Trait, levels = c("RA"))
+
+# Check the levels
+levels(pData(eset)$responder)
+levels(pData(eset)$Trait)
+
+# Create design matrix using only the Trait variable
+design <- model.matrix(~responder, data = pData(eset))
+
+# Check the column names of the design matrix
+colnames(design)
+head(design)
+
+# Fit the linear model
+fit <- lmFit(eset, design)
+
+# Create contrasts for each responder group vs. poor responder
+contrast.matrix <- makeContrasts(
+  NORESPONSE_vs_MEDIUM = responderNORESPONSE - responderMEDIUM,
+  levels = design
+)
+
+# Apply the contrast matrix
+fit2 <- contrasts.fit(fit, contrast.matrix)
+
+# Compute statistics using empirical Bayes
+fit2 <- eBayes(fit2)
+
+# Extract top differentially expressed genes for each contrast
+res_NORESPONSE_vs_MEDIUM <- topTable(fit2, coef = "NORESPONSE_vs_MEDIUM", number = Inf, adjust.method = "BH")
+
+# Write results to CSV files
+write.csv(res_NORESPONSE_vs_MEDIUM, file = "NORESPONSE_vs_MEDIUM.csv")
+
+# Create and save MA Plot for good vs poor responder
+threshold <- 0.05
+res_NORESPONSE_vs_MEDIUM$Significant <- ifelse(res_NORESPONSE_vs_MEDIUM$adj.P.Val < threshold, "Yes", "No")
+MA_NORESPONSE_vs_MEDIUM <- ggplot(res_NORESPONSE_vs_MEDIUM, aes(x = AveExpr, y = logFC, color = Significant)) +
+  geom_point(alpha = 0.5) +
+  scale_color_manual(values = c("No" = "black", "Yes" = "red")) +
+  theme_minimal() +
+  labs(title = "MA Plot: NORESPONSE_vs_MEDIUM", x = "Average Expression", y = "Log Fold Change") +
+  theme(legend.position = "none")
+ggsave("MA_plot_NORESPONSE_vs_MEDIUM.pdf", plot = MA_NORESPONSE_vs_MEDIUM, device = "pdf", width = 7, height = 5)
+
+# Create and save Volcano Plot for good vs poor responder
+volcano_NORESPONSE_vs_MEDIUM <- ggplot(res_NORESPONSE_vs_MEDIUM, aes(x = logFC, y = -log10(adj.P.Val), color = Significant)) +
+  geom_point(alpha = 0.5) +
+  scale_color_manual(values = c("No" = "black", "Yes" = "red")) +
+  theme_minimal() +
+  labs(title = "Volcano Plot: NORESPONSE_vs_MEDIUM Responder", x = "Log Fold Change", y = "-log10 Adjusted P-Value") +
+  theme(legend.position = "none")
+ggsave("Volcano_plot_NORESPONSE_vs_MEDIUM.pdf", plot = volcano_NORESPONSE_vs_MEDIUM, device = "pdf", width = 7, height = 5)
+
+library(pheatmap)
+
+# Select the top 50 differentially expressed genes for the heatmap
+top_genes <- head(res_NORESPONSE_vs_MEDIUM, 500)
+top_gene_ids <- rownames(top_genes)
+
+# Extract the expression data for these top genes
+top_gene_exprs <- exprs(eset)[top_gene_ids, ]
+
+# Create a heatmap
+heatmap_colors <- colorRampPalette(brewer.pal(9, "RdBu"))(255)
+annotation <- data.frame(Responder = pData(eset)$responder)
+rownames(annotation) <- colnames(top_gene_exprs)
+
+pdf("Heatmap_Top500_Genes_NORESPONSE_vs_MEDIUM.pdf", width = 10, height = 8)
+pheatmap(top_gene_exprs,
+         cluster_rows = TRUE,
+         cluster_cols = TRUE,
+         scale = "row",
+         annotation_col = annotation,
+         color = heatmap_colors,
+         main = "Heatmap of Top 500 Differentially Expressed Genes: NORESPONSE_vs_MEDIUM Responder",
+         show_rownames = FALSE)
+dev.off()
