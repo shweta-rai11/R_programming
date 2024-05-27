@@ -1,0 +1,203 @@
+
+library(limma)
+library(pheatmap)
+library(ggplot2)
+library(RColorBrewer)
+# This script is designed to detect differentially 
+# expressed genes with limma assuming that the data
+# is already normalized
+
+
+
+# Load GSE15573 data set using GEOquery, here I loaded saved 
+# data object from my system
+load("~/Desktop/geo/GSE67596/GSE67596-without-correction/GSE67596.RData")
+show(eset)
+
+
+# lmFit() function from limma requires log transformed data
+# Here we will apply variance stabilizing normalization to make array
+# intensities log transfomed and normally distributed. We need to 
+# re-create expressionSet object with transformed data
+exp_vsn <- normalizeVSN(exprs(eset))
+meanSdPlot(exp_vsn)
+eset <- ExpressionSet(assayData = exp_vsn, phenoData = phenoData(eset), 
+                      featureData = featureData(eset))
+
+
+# --------------------------------------------------------------------# 
+# Examine metadata
+head(pData(eset))
+sample_data <- pData(eset)
+
+# Select clinico-pathological variables from sample metadata
+sample_data <- pData(eset)
+
+sample_data <- data.frame(Trait = sample_data$characteristics_ch1.1,
+                          cell_type = sample_data$characteristics_ch1)
+#pData(eset)$Age <- ifelse(is.na(pData(eset)$Age), 25, pData(eset)$Age)
+unique(sample_data$cell_type)
+head(sample_data)
+
+# Modify the variable definitions to make them more palatable
+sample_data$Trait[sample_data$Trait == "disease state: Healthy control"] <- "control"
+sample_data$Trait[sample_data$Trait == "disease state: Polyrticular JIA"] <- "Polyrticular_JIA"
+sample_data$Trait[sample_data$Trait == "disease state: Pauciarticular JIA"] <- "Pauciarticular_JIA"
+sample_data$cell_type[sample_data$cell_type == "cell type: neutrophil"] <- "neutrophil"
+
+sample_data$cell_type[sample_data$cell_type == "cell type: PBMC"] <- "PBMC"
+
+
+'''sample_data$Gender <- gsub("gender: " , "", sample_data$Gender)
+sample_data$Age <- gsub("age: " , "", sample_data$Age)
+class(sample_data$Age) # age is still a character, we need to turn it into numbers
+sample_data$Age <- as.numeric(sample_data$Age)
+class(sample_data$Age)
+
+ax(sample_data$Age)
+min(sample_data$Age)
+
+# We can separate the patients into middle-aged and old categories
+age_group<-cut(sample_data$Age, 
+breaks=c(25, 45, 82), right = T)
+age_group
+sample_data$age_group <- age_group'''
+
+# Add modified variables to pData object
+pData(eset)$Trait <- sample_data$Trait
+pData(eset)$cell_type <- sample_data$cell_type
+head(pData(eset))
+
+# Create model matrix to compare RA samples to controls, 
+# while accounting for biological factors of no interest, i.e.
+# age and gender
+# The variables need to be converted to factors
+pData(eset)$Trait <- factor(pData(eset)$Trait, levels = c("control", "Polyrticular_JIA","Pauciarticular_JIA"))
+pData(eset)$cell_type <- factor(pData(eset)$cell_type, levels = c("neutrophil", "PBMC"))
+# Note, that we set Control as a reference level
+pData(eset)$Trait
+
+# Convert other variables to factors
+'''pData(eset)$Gender <- factor(pData(eset)$Gender)
+pData(eset)$Gender
+pData(eset)$Age_group <- factor(pData(eset)$Age_group)
+pData(eset)$Age_group'''
+
+# Create design matrix
+Trait <- pData(eset)$Trait
+cell_type <- pData(eset)$cell_type
+#Age_group <- pData(eset)$Age_group
+# Load necessary libraries
+library(limma)
+
+# Set Trait as a factor with Control as the reference level
+pData(eset)$Trait <- factor(pData(eset)$Trait, levels = c("control", "Polyrticular_JIA", "Pauciarticular_JIA"))
+pData(eset)$cell_type <- factor(pData(eset)$cell_type, levels = c("neutrophil", "PBMC"))
+
+# Create design matrix
+Trait <- pData(eset)$Trait
+cell_type <- pData(eset)$cell_type
+
+design <- model.matrix(~ Trait + cell_type)
+colnames(design)
+# Check the column names of the design matrix
+head(design)
+
+# Fit the linear model
+fit <- lmFit(eset, design)
+
+# Create contrasts for each disease group vs. control
+# Use the column names from the design matrix for the contrasts
+contrast.matrix <- makeContrasts(
+  Polyrticular_JIA_vs_Control = TraitPolyrticular_JIA,
+  Pauciarticular_JIA_vs_Control = TraitPauciarticular_JIA,
+  levels = design
+)
+
+# Fit the contrasts
+fit2 <- contrasts.fit(fit, contrast.matrix)
+fit2 <- eBayes(fit2)
+
+# Get top tables for each contrast
+res_Polyrticular_vs_Control <- topTable(fit2, coef = "Polyrticular_JIA_vs_Control", number = Inf, adjust.method = "BH")
+res_Pauciarticular_vs_Control <- topTable(fit2, coef = "Pauciarticular_JIA_vs_Control", number = Inf, adjust.method = "BH")
+
+# Write the results to CSV files
+write.csv(res_Polyrticular_vs_Control, file = "Polyrticular_JIA_vs_Control.csv")
+write.csv(res_Pauciarticular_vs_Control, file = "Pauciarticular_JIA_vs_Control.csv")
+
+# View the results
+head(res_Polyrticular_vs_Control)
+head(res_Pauciarticular_vs_Control)
+
+# Read the results from CSV files (if needed)
+res_Polyrticular_vs_Control <- read.csv("Polyrticular_JIA_vs_Control.csv", row.names = 1)
+res_Pauciarticular_vs_Control <- read.csv("Pauciarticular_JIA_vs_Control.csv", row.names = 1)
+
+################################################################################
+threshold <- 0.05
+
+# Polyrticular JIA vs Control MA Plot
+res_Polyrticular_vs_Control$Significant <- ifelse(res_Polyrticular_vs_Control$adj.P.Val < threshold, "Yes", "No")
+MA_Polyrticular <- ggplot(res_Polyrticular_vs_Control, aes(x = AveExpr, y = logFC, color = Significant)) +
+  geom_point(alpha = 0.5) +
+  scale_color_manual(values = c("No" = "black", "Yes" = "red")) +
+  theme_minimal() +
+  labs(title = "MA Plot: Polyrticular JIA vs Control", x = "Average Expression", y = "Log Fold Change") +
+  theme(legend.position = "none")
+
+# Print the Polyrticular JIA vs Control MA plot
+print(MA_Polyrticular)
+
+# Save the Polyrticular JIA vs Control MA plot
+ggsave("MA_plot_Polyrticular_JIA_vs_Control.pdf", plot = MA_Polyrticular, device = "pdf", width = 7, height = 5)
+
+# Pauciarticular JIA vs Control MA Plot
+res_Pauciarticular_vs_Control$Significant <- ifelse(res_Pauciarticular_vs_Control$adj.P.Val < threshold, "Yes", "No")
+MA_Pauciarticular <- ggplot(res_Pauciarticular_vs_Control, aes(x = AveExpr, y = logFC, color = Significant)) +
+  geom_point(alpha = 0.5) +
+  scale_color_manual(values = c("No" = "black", "Yes" = "red")) +
+  theme_minimal() +
+  labs(title = "MA Plot: Pauciarticular JIA vs Control", x = "Average Expression", y = "Log Fold Change") +
+  theme(legend.position = "none")
+
+# Print the Pauciarticular JIA vs Control MA plot
+print(MA_Pauciarticular)
+
+# Save the Pauciarticular JIA vs Control MA plot
+ggsave("MA_plot_Pauciarticular_JIA_vs_Control.pdf", plot = MA_Pauciarticular, device = "pdf", width = 7, height = 5)
+
+##############volcanoplot
+library(ggplot2)
+# Ensure the threshold is defined
+threshold <- 0.05
+
+# Polyrticular JIA vs Control Volcano Plot
+res_Polyrticular_vs_Control$Significant <- ifelse(res_Polyrticular_vs_Control$adj.P.Val < threshold, "Yes", "No")
+volcano_Polyrticular <- ggplot(res_Polyrticular_vs_Control, aes(x = logFC, y = -log10(adj.P.Val), color = Significant)) +
+  geom_point(alpha = 0.5) +
+  scale_color_manual(values = c("No" = "black", "Yes" = "red")) +
+  theme_minimal() +
+  labs(title = "Volcano Plot: Polyrticular JIA vs Control", x = "Log Fold Change", y = "-log10 Adjusted P-Value") +
+  theme(legend.position = "none")
+
+# Print the Polyrticular JIA vs Control plot
+print(volcano_Polyrticular)
+
+# Save the Polyrticular JIA vs Control plot
+ggsave("Polyrticular_JIA_vs_Control_volcano_plot.pdf", plot = volcano_Polyrticular, device = "pdf", width = 7, height = 5)
+
+# Pauciarticular JIA vs Control Volcano Plot
+res_Pauciarticular_vs_Control$Significant <- ifelse(res_Pauciarticular_vs_Control$adj.P.Val < threshold, "Yes", "No")
+volcano_Pauciarticular <- ggplot(res_Pauciarticular_vs_Control, aes(x = logFC, y = -log10(adj.P.Val), color = Significant)) +
+  geom_point(alpha = 0.5) +
+  scale_color_manual(values = c("No" = "black", "Yes" = "red")) +
+  theme_minimal() +
+  labs(title = "Volcano Plot: Pauciarticular JIA vs Control", x = "Log Fold Change", y = "-log10 Adjusted P-Value") +
+  theme(legend.position = "none")
+
+# Print the Pauciarticular JIA vs Control plot
+print(volcano_Pauciarticular)
+
+# Save the Pauciarticular JIA vs Control plot
+ggsave("Pauciarticular_JIA_vs_Control_volcano_plot_.pdf", plot = volcano_Pauciarticular, device = "pdf", width = 7, height = 5)
