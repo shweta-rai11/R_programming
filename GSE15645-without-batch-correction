@@ -1,0 +1,117 @@
+library(limma)
+library(pheatmap)
+library(ggplot2)
+library(RColorBrewer)
+library(GEOquery)
+
+# Load GSE15573 data set using GEOquery
+load("~/Desktop/geo/GSE15645/GSE15645-with-correction/GSE15645.RData")
+show(eset)
+
+# Apply variance stabilizing normalization
+exp_vsn <- normalizeVSN(exprs(eset))
+meanSdPlot(exp_vsn)
+eset <- ExpressionSet(assayData = exp_vsn, phenoData = phenoData(eset), featureData = featureData(eset))
+
+# Examine metadata
+sample_data <- pData(eset)
+
+# Select clinico-pathological variables from sample metadata
+sample_data <- data.frame(Trait = sample_data$characteristics_ch1,
+                          cell_type = sample_data$characteristics_ch1.2)
+
+# Modify the variable definitions
+sample_data$Trait[sample_data$Trait == "disease state: control"] <- "control"
+sample_data$Trait[sample_data$Trait == "disease state: polyarticular JIA"] <- "Polyrticular_JIA"
+sample_data$cell_type[sample_data$cell_type == "cell type: PBMC"] <- "PBMC"
+
+# Add modified variables to pData object
+pData(eset)$Trait <- sample_data$Trait
+pData(eset)$cell_type <- sample_data$cell_type
+
+# Ensure the factors have correct levels
+pData(eset)$Trait <- factor(pData(eset)$Trait, levels = c("control", "Polyrticular_JIA"))
+pData(eset)$cell_type <- factor(pData(eset)$cell_type, levels = c("PBMC"))
+
+# Check the levels
+levels(pData(eset)$Trait)
+levels(pData(eset)$cell_type)
+
+# Create design matrix using only the Trait variable
+design <- model.matrix(~ Trait, data = pData(eset))
+
+colnames(design)
+# Check the column names of the design matrix
+head(design)
+
+library(limma)
+
+# Fit the linear model
+fit <- lmFit(eset, design)
+
+# Create contrasts for each disease group vs. control
+contrast.matrix <- makeContrasts(
+  Polyrticular_JIA_vs_Control = TraitPolyrticular_JIA,
+  levels = design
+)
+
+# Apply the contrast matrix
+fit2 <- contrasts.fit(fit, contrast.matrix)
+
+# Compute statistics using empirical Bayes
+fit2 <- eBayes(fit2)
+
+# Extract top differentially expressed genes
+res_Polyrticular_vs_Control <- topTable(fit2, coef = "Polyrticular_JIA_vs_Control", number = Inf, adjust.method = "BH")
+write.csv(res_Polyrticular_vs_Control, file = "Polyrticular_JIA_vs_Control.csv")
+
+# MA Plot for Polyrticular JIA vs Control
+threshold <- 0.05
+res_Polyrticular_vs_Control$Significant <- ifelse(res_Polyrticular_vs_Control$adj.P.Val < threshold, "Yes", "No")
+MA_Polyrticular <- ggplot(res_Polyrticular_vs_Control, aes(x = AveExpr, y = logFC, color = Significant)) +
+  geom_point(alpha = 0.5) +
+  scale_color_manual(values = c("No" = "black", "Yes" = "red")) +
+  theme_minimal() +
+  labs(title = "MA Plot: Polyrticular JIA vs Control", x = "Average Expression", y = "Log Fold Change") +
+  theme(legend.position = "none")
+
+# Print the Polyrticular JIA vs Control MA plot
+print(MA_Polyrticular)
+
+# Save the Polyrticular JIA vs Control MA plot
+ggsave("MA_plot_Polyrticular_JIA_vs_Control.pdf", plot = MA_Polyrticular, device = "pdf", width = 7, height = 5)
+
+# Volcano Plot for Polyrticular JIA vs Control
+volcano_Polyrticular <- ggplot(res_Polyrticular_vs_Control, aes(x = logFC, y = -log10(adj.P.Val), color = Significant)) +
+  geom_point(alpha = 0.5) +
+  scale_color_manual(values = c("No" = "black", "Yes" = "red")) +
+  theme_minimal() +
+  labs(title = "Volcano Plot: Polyrticular JIA vs Control", x = "Log Fold Change", y = "-log10 Adjusted P-Value") +
+  theme(legend.position = "none")
+
+# Print the Polyrticular JIA vs Control Volcano plot
+print(volcano_Polyrticular)
+
+# Save the Polyrticular JIA vs Control Volcano plot
+ggsave("Polyrticular_JIA_vs_Control_volcano_plot.pdf", plot = volcano_Polyrticular, device = "pdf", width = 7, height = 5)
+
+# Heatmap for significant differentially expressed genes
+sig_genes <- res_Polyrticular_vs_Control[res_Polyrticular_vs_Control$adj.P.Val < threshold, ]
+sig_gene_ids <- rownames(sig_genes)
+sig_exp <- exprs(eset)[sig_gene_ids, ]
+
+# Create annotation for the heatmap
+annot <- data.frame(Trait = pData(eset)$Trait)
+rownames(annot) <- rownames(pData(eset))
+
+# Generate and save the heatmap
+pdf("heatmap_significant.pdf", width = 7, height = 6)
+pheatmap(sig_exp, 
+         color = colorRampPalette(rev(brewer.pal(n = 7, name = "RdYlBu")))(100),
+         scale="row", 
+         clustering_distance_rows = "euclidean",
+         clustering_distance_cols = "euclidean",
+         clustering_method = "ward.D2",
+         annotation_col = annot, 
+         show_rownames = F)
+dev.off()
