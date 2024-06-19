@@ -1,0 +1,20 @@
+
+
+library(GEOquery)
+# Download existing RA datasets
+
+# Download GSE39340
+gse <- getGEO("GSE56649")
+class(gse)
+show(gse)
+show(pData(phenoData(gse[[1]]))[1:4,])
+class(gse[[1]])
+
+# The expression set is a first element of the list 
+eset <- gse[[1]]
+head(pData(eset))
+class(eset)
+# Save expression set
+save( eset, file="GSE56649.RData")
+
+show(eset)
