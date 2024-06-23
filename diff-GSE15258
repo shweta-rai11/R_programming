@@ -1,0 +1,126 @@
+library(limma)
+library(pheatmap)
+library(ggplot2)
+library(RColorBrewer)
+# This script is designed to detect differentially 
+# expressed genes in Affymetrix array with limma assuming that the data
+# is already normalized
+
+# Detect and model batch effects using SVA and limma
+#setwd("~/Desktop/geo/GSE15258_RAW")
+load("~/Desktop/geo/GSE15258_RAW/unzip/affy_norm_without_outier_removal.RData")
+
+# --------------------------------------------------------------------# 
+# Examine metadata
+pheno_data <- phenoData(gse[[1]])
+pData(pheno_data)$characteristics_ch1.5
+
+
+# Load necessary libraries
+library(limma)
+
+# Impute NA values with the mode (if not already done)
+# Define a function to calculate the mode
+get_mode <- function(v) {
+  uniq_v <- unique(v)
+  uniq_v[which.max(tabulate(match(v, uniq_v)))]
+}
+
+# Extract the relevant column
+response_column <- pData(Affy_norm)$characteristics_ch1.5
+
+# Calculate the mode, ignoring the prefix
+response_values <- gsub("response to anti-tnf therapy: ", "", response_column)
+mode_value <- get_mode(response_values[response_values != "NA"])
+
+# Impute NA values with the mode
+response_values[response_values == "NA"] <- mode_value
+
+# Add the prefix back
+imputed_response_column <- paste("response to anti-tnf therapy:", response_values)
+
+# Update the column in pData
+pData(Affy_norm)$characteristics_ch1.5 <- imputed_response_column
+
+# Convert the column to a factor
+pData(Affy_norm)$characteristics_ch1.5 <- factor(pData(Affy_norm)$characteristics_ch1.5)
+
+# Create the design matrix
+design <- model.matrix(~characteristics_ch1.5, data=pData(Affy_norm))
+
+# Ensure the dimensions match
+cat("Number of samples (columns in Affy_norm):", ncol(exprs(Affy_norm)), "\n")
+cat("Number of rows in design matrix:", nrow(design), "\n")
+
+# Fit the linear model
+fit <- lmFit(Affy_norm, design)
+fit <- eBayes(fit)
+res <- topTable(fit, coef = "characteristics_ch1.5response to anti-tnf therapy: NORESPONSE", number = dim(fit$p.value)[1], 
+                adjust.method = "BH") 
+head(res)
+write.csv(res, file = "RA_vs_Controls.csv")
+
+# How many genes are significant (adj.p.value < 0.05 and absolute 
+# fold change > 1.5)
+sum(res$adj.P.Val < 0.05) # 8108 probes
+# Save the results for significant probes
+write.csv(res[res$adj.P.Val < 0.05,], 
+          file = "RA_vs_Controls_sig_only.csv")
+
+
+# Plot a heatmap of differentially expressed probes
+sig_probes <- rownames(res[which(res$adj.P.Val < 0.05),])
+expr <- exprs(Affy_norm)
+sig_exp <- expr[rownames(expr) %in% sig_probes,]
+colnames(sig_exp) <- gsub(".CEL", "", colnames(sig_exp))
+
+annot <- data.frame(Trait = pData(Affy_norm)$Trait)
+rownames(annot) <- rownames(pData(Affy_norm))
+head(annot)
+
+# Clustering and heatmap for significant probes (adj. p-values < 0.05)
+pdf("heatmap_significant.pdf", width = 7, height = 6)
+pheatmap(sig_exp, 
+         color = colorRampPalette(rev(brewer.pal(n = 7, name =
+                                                   "RdYlBu")))(100),
+         scale="row", 
+         clustering_distance_rows = "euclidean",
+         clustering_distance_cols = "euclidean",
+         clustering_method = "ward.D2",
+         annotation_col = annot, 
+         show_rownames = F)
+dev.off()
+
+# Create MA plot showing the relationship between average expression
+# and log fold change
+res <- res[with(res, order(logFC)),]
+res$threshold <- as.factor(res$adj.P.Val < 0.05)
+ggplot(data=res, aes(x=log2(AveExpr), y=logFC, colour=threshold)) + 
+  geom_point(alpha=0.4, size=1.8) + 
+  geom_hline(aes(yintercept = 0), colour = "blue", size = 1.2) +
+  ylim(c(min(res$logFC), max(res$logFC))) + 
+  xlab("Mean expression") + 
+  ylab("Log2 Fold Change") + 
+  theme(axis.title.x = element_text(face = "bold", size = 15),
+        axis.text.x = element_text(face = "bold", size = 12)) +
+  theme(axis.title.y = element_text(face = "bold", size = 15),
+        axis.text.y = element_text(face = "bold", size = 12)) +
+  scale_colour_discrete(name = "p.adjusted < 0.05") +
+  theme(legend.title = element_text(face = "bold", size = 15)) +
+  theme(legend.text = element_text(size = 14))
+ggsave("MAplot.pdf", device = "pdf", width = 7, height = 5)
+
+# Create volcano plot
+res <- res[with(res, order(logFC)),]
+res$threshold <- as.factor(res$adj.P.Val < 0.05)
+ggplot(data=res, aes(x=logFC, y=-log10(adj.P.Val), colour=threshold)) + 
+  geom_point(alpha=0.4, size=1.75) + xlim(c(min(res$logFC), 
+                                            c(max(res$logFC)))) +
+  ylim(c(min(-log10(res$adj.P.Val)), max(-log10(res$adj.P.Val)))) + 
+  xlab("log2 fold change") + 
+  ylab("-log10 adjusted p-value") +
+  theme(axis.text=element_text(size=12, face="bold")) +
+  theme(axis.title=element_text(size=14)) +
+  theme(legend.title=element_text(size=14)) +
+  theme(legend.text=element_text(size=12))
+ggsave("volcano_plot.pdf", device = "pdf", width = 5, height = 7)
