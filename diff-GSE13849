@@ -1,0 +1,125 @@
+library(limma)
+library(pheatmap)
+library(ggplot2)
+library(RColorBrewer)
+# This script is designed to detect differentially 
+# expressed genes in Affymetrix array with limma assuming that the data
+# is already normalized
+
+# Detect and model batch effects using SVA and limma
+#setwd("<working_directory>")
+load("~/Desktop/geo/GSE13849_RAW/unzipped/affy_norm_without_outier_removal.RData")
+
+# --------------------------------------------------------------------# 
+# Examine metadata
+pheno_data <- phenoData(gse[[1]])
+pData(pheno_data)$source_name_ch1
+pData(pheno_data)$characteristics_ch1.5
+
+# Create model matrix to compare JIA vs control, 
+# while accounting for biological factors of no interest, i.e.
+
+# Disease_state
+# The variables need to be converted to factors
+pData(Affy_norm)$Disease_state <- factor(pData(Affy_norm)$Disease_state, 
+                                 levels = c("CTRL", "RF- polyarthritis","Peripheral blood mononuclear cells, RF+ polyarthritis","Peripheral blood mononuclear cells, RF- polyarthritis"))
+
+# Note, that we set Control as a reference level
+pData(Affy_norm)$Disease_state
+
+
+# Gender - it has missing values
+
+# Replace blank spaces in Gender column with NA
+pData(Affy_norm)$Gender[pData(Affy_norm)$Gender == ""] <- NA
+
+# Identify the mode for the Gender column
+gender_mode <- as.character(names(sort(table(pData(Affy_norm)$Gender), decreasing = TRUE)[1]))
+
+# Impute missing values in the Gender column with the mode
+pData(Affy_norm)$Gender[is.na(pData(Affy_norm)$Gender)] <- gender_mode
+
+# Convert the Gender column to a factor with the desired levels
+pData(Affy_norm)$Gender <- factor(pData(Affy_norm)$Gender, 
+                                  levels = c("sex: Female", "sex: Male"))
+
+pData(Affy_norm)$Gender 
+library(limma)
+
+# Create design matrix
+design <- model.matrix(~Gender + Disease_state, data=pData(Affy_norm))
+head(design)
+
+# Fit the model
+fit <- lmFit(Affy_norm, design)
+fit <- eBayes(fit)
+res <- topTable(fit, coef = "Gendersex: Male", number = dim(fit$p.value)[1], 
+                adjust.method = "BH") 
+head(res)
+write.csv(res, file = "RA_vs_Controls_affy_norm.csv")
+
+# How many genes are significant (adj.p.value < 0.05 and absolute 
+# fold change > 1.5)
+sum(res$adj.P.Val < 0.05) # 8108 probes
+# Save the results for significant probes
+write.csv(res[res$adj.P.Val < 0.05,], 
+          file = "RA_vs_Controls_sig_only.csv")
+
+
+# Plot a heatmap of differentially expressed probes
+sig_probes <- rownames(res[which(res$adj.P.Val < 0.05),])
+expr <- exprs(Affy_norm)
+sig_exp <- expr[rownames(expr) %in% sig_probes,]
+colnames(sig_exp) <- gsub(".CEL", "", colnames(sig_exp))
+
+annot <- data.frame(Disease_state = pData(Affy_norm)$Disease_state,
+                    Gender = pData(Affy_norm)$Gender)
+rownames(annot) <- rownames(pData(Affy_norm))
+head(annot)
+
+# Clustering and heatmap for significant probes (adj. p-values < 0.05)
+pdf("heatmap_significant.pdf", width = 7, height = 6)
+pheatmap(sig_exp, 
+         color = colorRampPalette(rev(brewer.pal(n = 7, name =
+                                                   "RdYlBu")))(100),
+         scale="row", 
+         clustering_distance_rows = "euclidean",
+         clustering_distance_cols = "euclidean",
+         clustering_method = "ward.D2",
+         annotation_col = annot, 
+         show_rownames = F)
+dev.off()
+
+# Create MA plot showing the relationship between average expression
+# and log fold change
+res <- res[with(res, order(logFC)),]
+res$threshold <- as.factor(res$adj.P.Val < 0.05)
+ggplot(data=res, aes(x=log2(AveExpr), y=logFC, colour=threshold)) + 
+  geom_point(alpha=0.4, size=1.8) + 
+  geom_hline(aes(yintercept = 0), colour = "blue", size = 1.2) +
+  ylim(c(min(res$logFC), max(res$logFC))) + 
+  xlab("Mean expression") + 
+  ylab("Log2 Fold Change") + 
+  theme(axis.title.x = element_text(face = "bold", size = 15),
+        axis.text.x = element_text(face = "bold", size = 12)) +
+  theme(axis.title.y = element_text(face = "bold", size = 15),
+        axis.text.y = element_text(face = "bold", size = 12)) +
+  scale_colour_discrete(name = "p.adjusted < 0.05") +
+  theme(legend.title = element_text(face = "bold", size = 15)) +
+  theme(legend.text = element_text(size = 14))
+ggsave("MAplot.pdf", device = "pdf", width = 7, height = 5)
+
+# Create volcano plot
+res <- res[with(res, order(logFC)),]
+res$threshold <- as.factor(res$adj.P.Val < 0.05)
+ggplot(data=res, aes(x=logFC, y=-log10(adj.P.Val), colour=threshold)) + 
+  geom_point(alpha=0.4, size=1.75) + xlim(c(min(res$logFC), 
+                                            c(max(res$logFC)))) +
+  ylim(c(min(-log10(res$adj.P.Val)), max(-log10(res$adj.P.Val)))) + 
+  xlab("log2 fold change") + 
+  ylab("-log10 adjusted p-value") +
+  theme(axis.text=element_text(size=12, face="bold")) +
+  theme(axis.title=element_text(size=14)) +
+  theme(legend.title=element_text(size=14)) +
+  theme(legend.text=element_text(size=12))
+ggsave("volcano_plot.pdf", device = "pdf", width = 5, height = 7)
