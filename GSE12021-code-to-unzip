@@ -1,0 +1,25 @@
+# Load necessary library
+library(R.utils)
+
+# Define the paths
+gz_files_path <- "~/Desktop/geo/GSE12021_RAW"
+unzip_folder_path <- "~/Desktop/geo/GSE12021_RAW/unzip"
+
+# Create the 'unzip' directory if it doesn't exist
+if (!dir.exists(unzip_folder_path)) {
+  dir.create(unzip_folder_path)
+}
+
+# Get the list of .gz files
+gz_files <- list.files(gz_files_path, pattern = "*.gz", full.names = TRUE)
+
+# Unzip each file
+for (gz_file in gz_files) {
+  # Define the output file path
+  output_file <- file.path(unzip_folder_path, gsub(".gz$", "", basename(gz_file)))
+  
+  # Unzip the file
+  gunzip(gz_file, destname = output_file, remove = FALSE)
+}
+
+cat("All files have been successfully unzipped and stored in the 'unzip' folder.\n")
