@@ -1,0 +1,156 @@
+
+
+#Description about the paper: 
+
+# To determine whether PBMC from children with recent onset JIA 
+#exhibit biologically or clinically informative gene expression signatures.
+# in polyarticular juvenile idiopathic arthritis (JIA) 
+# using gene expression microarrays.
+# 59 samples from healthy childrens, 61 JIA children 
+##########################################################
+# Step 1: Setting the working directory
+# Note that the files are unzipped using the code present in the code-to-unzip.R file.
+setwd("~/Desktop/geo/GSE15258_RAW/unzip")
+
+# Step 2:  Load the libraries
+library(affy)
+library(GEOquery)
+library(ggplot2)
+library(reshape2)
+library(arrayQualityMetrics)
+
+
+# Step 3:  Download supplementary files
+getGEOSuppFiles("GSE15258")
+
+
+# Step 4: Figure out which samples belong 2 which platform
+# This is the platform name : GPL570	[HG-U133_Plus_2] Affymetrix Human Genome U133 Plus 2.0 Array
+
+gse <- getGEO("GSE15258") #The gse object will contain a list of ExpressionSet objects, 
+#with each object representing a dataset from the GEO series
+
+pData(gse[[1]])$supplementary_file # this code extracts the supplementary files from the pData
+write.csv(pData(gse[[1]]), file = "sample_info.csv") # raw phenotypic data is stored here.
+
+# Step 5:  Add Gender and Disease_state variables as we selected these two features from the metadata.#
+# It contains important information related to gender and disease condition.
+pData(gse[[1]])$Trait <- pData(gse[[1]])$`characteristics_ch1.5`
+#pData(gse[[1]])$Gender <- pData(gse[[1]])$`characteristics_ch1.5`
+
+
+
+# Step 6: Read the raw files and normalise it using Affy package.
+AffyBatch <- ReadAffy()
+
+# Run background correction, normalization and summarization
+Affy_norm <- expresso(AffyBatch, bgcorrect.method="rma",
+                      normalize.method="quantiles", pmcorrect.method="pmonly",
+                      summary.method="medianpolish")
+
+pData(Affy_norm) <- pData(gse[[1]])
+# Save normalized ExpressionSet object 
+save(Affy_norm, file="affy_norm_without_outier_removal.RData")
+
+# Step 7:Examine array qualities 
+# Get expression matrix
+expr <- exprs(Affy_norm)
+head(expr)
+# Melt the expression matrix
+expr_melt <- melt(as.data.frame(expr))
+names(expr_melt) <- c("sample", "intensity")
+head(expr_melt)
+
+# Create violin plot after normalization
+ggplot(expr_melt, aes(x=sample, y = log2(intensity))) +
+  geom_violin() + 
+  geom_boxplot(width = 0.1) + 
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+ggsave("intensities_violin_normalized.pdf", device = "pdf", units = "in", 
+       width = 8, height = 5)
+
+library(arrayQualityMetrics)
+
+# Run array quality control analysis using arrayQualityMetrics
+aqm <- arrayQualityMetrics(Affy_norm,
+                           outdir = "arrayQualityReport",
+                           force = TRUE,
+                           do.logtransform = TRUE,
+                           intgroup = c("Trait"),
+                           spatial = TRUE,
+                           reporttitle = paste("arrayQualityMetrics report for", 
+                                               deparse(substitute(expressionset))))
+
+# Get the extreme values from the array quality metrics results
+extreme_values <- aqm$sample$INTENSITY_OUTLIER
+
+# Convert the result to a data frame for easier manipulation
+extreme_values_df <- as.data.frame(extreme_values)
+
+# Add row names (sample names) to the data frame
+extreme_values_df$sample <- rownames(extreme_values_df)
+
+# Display the extreme values with sample names
+head(extreme_values_df)
+# Find the row index with the outlier
+outlier_index <- which(extreme_values_df$INTENSITY_OUTLIER == TRUE)
+
+# Get the sample name corresponding to the outlier
+outlier_sample <- rownames(extreme_values_df)[outlier_index]
+
+# Display the outlier sample name
+outlier_sample
+
+
+##### FOLLOW THIS STEP ONLY IF OUTLIER IS PRESENT OR ELSE IGNORE THIS STEP below
+# ---------------------------------------------------------------------------- #
+
+
+# Remove outlier and re-run the analysis
+
+rownames(pData(gse[[1]]))[83]
+# the offending sample - GSE15645
+
+#setwd("raw_files/")
+AffyBatch <- ReadAffy()
+
+# Run background correction, normalization and summarization
+Affy_norm <- expresso(AffyBatch, bgcorrect.method="rma",
+                      normalize.method="quantiles", pmcorrect.method="pmonly",
+                      summary.method="medianpolish")
+pheno <- pData(gse[[1]])
+pheno <- pheno[-83,]
+pData(Affy_norm) <- pheno
+# Save normalized ExpressionSet object 
+save(Affy_norm, file="GSE15645_affy_norm_outlier_removed.RData")
+
+# Examine array qualities
+# Create violin plot after normalization
+# Get expression matrix
+expr <- exprs(Affy_norm)
+head(expr)
+
+# Melt the expression matrix
+expr_melt <- melt(as.data.frame(expr))
+names(expr_melt) <- c("sample", "intensity")
+head(expr_melt)
+
+# The samples were background corrected but not normalized
+ggplot(expr_melt, aes(x=sample, y = log2(intensity))) +
+  geom_violin() + 
+  geom_boxplot(width = 0.1) + 
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+ggsave("GSE13849intensities_violin_normalized_outlier_removed.pdf", 
+       device = "pdf", units = "in", 
+       width = 8, height = 5)
+
+# Run array quality control analysis using arrayQualityMetrics
+arrayQualityMetrics(Affy_norm,
+                    outdir = "GSE15645_arrayQualityReport_outlier_removed",
+                    force = T,
+                    do.logtransform = T,
+                    intgroup = c("Disease_state"),
+                    spatial = TRUE,
+                    reporttitle = paste("arrayQualityMetrics report for", 
+                                        deparse(substitute(expressionset)))
+)
